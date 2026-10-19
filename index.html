@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinanzPlaner</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#fff; --text:#1d2430; --muted:#6b7686; --accent:#2563eb; --red:#dc2626; --green:#16a34a; --line:#e3e7ec; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12161c; --card:#1b212a; --text:#e8ecf1; --muted:#97a3b3; --accent:#60a5fa; --red:#f87171; --green:#4ade80; --line:#2a323e; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.4 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.4rem; margin:8px 0 16px; }
+  h2 { font-size:1.05rem; margin:24px 0 8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:10px; }
+  .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .summary .card { margin:0; }
+  .label { color:var(--muted); font-size:.8rem; }
+  .big { font-size:1.4rem; font-weight:700; }
+  .red { color:var(--red); } .green { color:var(--green); }
+  .row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+  .name { font-weight:600; }
+  .sub { color:var(--muted); font-size:.85rem; }
+  .amount { font-weight:700; white-space:nowrap; }
+  .bar { height:6px; background:var(--line); border-radius:3px; margin-top:8px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--accent); }
+  .badge { font-size:.75rem; padding:2px 8px; border-radius:99px; background:var(--line); color:var(--muted); }
+  .badge.soon { background:var(--accent); color:#fff; }
+  button, input, select { font:inherit; color:inherit; }
+  button { cursor:pointer; border:1px solid var(--line); background:var(--card); border-radius:8px; padding:6px 12px; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.link { border:none; background:none; color:var(--accent); padding:2px 6px; }
+  button.del { color:var(--red); }
+  form { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  form label { display:flex; flex-direction:column; font-size:.8rem; color:var(--muted); gap:3px; }
+  form .full { grid-column:1/-1; }
+  input, select { padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); width:100%; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .empty { color:var(--muted); text-align:center; padding:20px; }
+  .tools { display:flex; gap:8px; flex-wrap:wrap; margin-top:24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>💶 Meine Fixkosten</h1>
+
+  <div class="summary" id="summary"></div>
+
+  <h2>Demnächst fällig</h2>
+  <div id="upcoming"></div>
+
+  <h2>Raten &amp; Laufzeiten</h2>
+  <div id="installments"></div>
+
+  <h2>Alle Fixkosten</h2>
+  <div id="all"></div>
+
+  <div class="actions" style="margin-top:12px">
+    <button class="primary" id="addBtn">+ Neu hinzufügen</button>
+  </div>
+
+  <div class="card" id="formCard" style="display:none;margin-top:12px">
+    <form id="form">
+      <label class="full">Name<input name="name" required placeholder="z. B. Miete, Handyvertrag, Autokredit"></label>
+      <label>Betrag pro Monat (€)<input name="amount" type="number" step="0.01" min="0" required></label>
+      <label>Abbuchung am Tag des Monats<input name="day" type="number" min="1" max="31" required></label>
+      <label>Art
+        <select name="type">
+          <option value="open">Läuft unbefristet (Miete, Abo …)</option>
+          <option value="rate">Rate mit Ende (Kredit, Finanzierung …)</option>
+        </select>
+      </label>
+      <label>Erste Abbuchung (Monat)<input name="start" type="month" required></label>
+      <label class="rate-only">Anzahl Raten insgesamt<input name="count" type="number" min="1"></label>
+      <div class="full actions">
+        <button class="primary" type="submit">Speichern</button>
+        <button type="button" id="cancelBtn">Abbrechen</button>
+      </div>
+    </form>
+  </div>
+
+  <h2>Einkommen (optional)</h2>
+  <div class="card">
+    <label class="sub">Monatliches Netto-Einkommen (€)
+      <input id="income" type="number" step="0.01" min="0" placeholder="für die Anzeige, was übrig bleibt">
+    </label>
+  </div>
+
+  <div class="tools">
+    <button id="exportBtn">Backup speichern</button>
+    <button id="importBtn">Backup laden</button>
+    <input type="file" id="importFile" accept="application/json" hidden>
+  </div>
+  <p class="sub">Die Daten liegen nur in diesem Browser. Mach ab und zu ein Backup.</p>
+</main>
+
+<script>
+const KEY = 'finanzplaner.v1';
+let state = load();
+let editId = null;
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || { items: [], income: 0 }; }
+  catch { return { items: [], income: 0 }; }
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
+
+const eur = n => n.toLocaleString('de-DE', { style:'currency', currency:'EUR' });
+const $ = id => document.getElementById(id);
+const monthIndex = ym => { const [y,m] = ym.split('-').map(Number); return y*12 + m-1; };
+const monthLabel = idx => new Date(Math.floor(idx/12), idx%12, 1).toLocaleDateString('de-DE', { month:'long', year:'numeric' });
+const today = new Date();
+const nowIdx = today.getFullYear()*12 + today.getMonth();
+
+// Datum der Abbuchung in einem Monat (Tag wird auf Monatsende gekürzt, z. B. 31. im Februar)
+function dueDate(idx, day) {
+  const y = Math.floor(idx/12), m = idx%12;
+  const last = new Date(y, m+1, 0).getDate();
+  return new Date(y, m, Math.min(day, last));
+}
+
+// Index der Abbuchungen: 0 = erste Rate. Liefert Status eines Eintrags.
+function status(it) {
+  const start = monthIndex(it.start);
+  const lastIdx = it.type === 'rate' ? start + it.count - 1 : Infinity;
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  // nächster Monat, dessen Fälligkeit heute oder später ist
+  let idx = Math.max(nowIdx, start);
+  if (dueDate(idx, it.day) < todayStart) idx++;
+  if (idx > lastIdx) return { done:true };
+  const remaining = it.type === 'rate' ? Math.max(0, it.count - Math.max(0, idx - start)) : null;
+  return { done:false, next: dueDate(idx, it.day), nextIdx: idx, lastIdx, remaining, started: start <= nowIdx };
+}
+
+function render() {
+  const items = state.items.map(it => ({ it, st: status(it) }));
+  const running = items.filter(x => !x.st.done && x.st.started);
+  const monthly = running.reduce((s,x) => s + x.it.amount, 0);
+  const income = +state.income || 0;
+
+  $('summary').innerHTML =
+    `<div class="card"><div class="label">Fixkosten pro Monat</div><div class="big red">${eur(monthly)}</div></div>` +
+    (income ? `<div class="card"><div class="label">Bleibt übrig</div><div class="big ${income-monthly>=0?'green':'red'}">${eur(income-monthly)}</div></div>` : '') +
+    `<div class="card"><div class="label">Offen bei Raten gesamt</div><div class="big">${eur(
+      running.filter(x => x.it.type==='rate').reduce((s,x) => s + x.st.remaining*x.it.amount, 0))}</div></div>`;
+
+  const fmt = d => d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' });
+  const daysTo = d => Math.round((d - new Date(today.getFullYear(), today.getMonth(), today.getDate())) / 864e5);
+
+  const up = running.slice().sort((a,b) => a.st.next - b.st.next).slice(0,5);
+  $('upcoming').innerHTML = up.length ? up.map(({it,st}) => {
+    const d = daysTo(st.next);
+    return `<div class="card row"><div><div class="name">${esc(it.name)}</div>
+      <div class="sub">${fmt(st.next)}</div></div>
+      <div style="text-align:right"><div class="amount">${eur(it.amount)}</div>
+      <span class="badge ${d<=7?'soon':''}">${d===0?'heute':d===1?'morgen':'in '+d+' Tagen'}</span></div></div>`;
+  }).join('') : '<div class="card empty">Noch nichts eingetragen.</div>';
+
+  const rates = items.filter(x => x.it.type==='rate' && !x.st.done)
+    .sort((a,b) => a.st.lastIdx - b.st.lastIdx);
+  $('installments').innerHTML = rates.length ? rates.map(({it,st}) => {
+    const paid = it.count - st.remaining;
+    const pct = Math.round(paid / it.count * 100);
+    return `<div class="card"><div class="row"><div><div class="name">${esc(it.name)}</div>
+      <div class="sub">Noch <b>${st.remaining}</b> von ${it.count} Raten · letzte Rate ${monthLabel(st.lastIdx)}</div></div>
+      <div style="text-align:right"><div class="amount">${eur(it.amount)}</div>
+      <div class="sub">Rest ${eur(st.remaining*it.amount)}</div></div></div>
+      <div class="bar"><div style="width:${pct}%"></div></div></div>`;
+  }).join('') : '<div class="card empty">Keine laufenden Raten.</div>';
+
+  $('all').innerHTML = items.length ? items.slice().sort((a,b)=>a.it.day-b.it.day).map(({it,st}) =>
+    `<div class="card row"><div><div class="name">${esc(it.name)} ${st.done?'<span class="badge">abbezahlt</span>':''}</div>
+      <div class="sub">am ${it.day}. · ${it.type==='rate'?'Rate':'unbefristet'}</div></div>
+      <div style="text-align:right"><div class="amount">${eur(it.amount)}</div>
+      <button class="link" data-edit="${it.id}">Ändern</button><button class="link del" data-del="${it.id}">Löschen</button></div></div>`
+  ).join('') : '<div class="card empty">Noch nichts eingetragen.</div>';
+
+  $('income').value = state.income || '';
+}
+
+function esc(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function toggleRate() {
+  const isRate = $('form').type.value === 'rate';
+  document.querySelectorAll('.rate-only').forEach(e => e.style.display = isRate ? '' : 'none');
+  $('form').count.required = isRate;
+}
+
+function openForm(it) {
+  const f = $('form');
+  editId = it ? it.id : null;
+  f.reset();
+  f.start.value = it ? it.start : `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+  if (it) {
+    f.name.value = it.name; f.amount.value = it.amount; f.day.value = it.day;
+    f.type.value = it.type; f.start.value = it.start; f.count.value = it.count || '';
+  }
+  toggleRate();
+  $('formCard').style.display = '';
+  $('formCard').scrollIntoView({ behavior:'smooth' });
+}
+
+$('addBtn').onclick = () => openForm(null);
+$('cancelBtn').onclick = () => $('formCard').style.display = 'none';
+$('form').type.onchange = toggleRate;
+$('form').onsubmit = e => {
+  e.preventDefault();
+  const f = e.target;
+  const it = {
+    id: editId || String(Date.now()),
+    name: f.name.value.trim(), amount: +f.amount.value, day: +f.day.value,
+    type: f.type.value, start: f.start.value,
+    count: f.type.value === 'rate' ? +f.count.value : 0,
+  };
+  const i = state.items.findIndex(x => x.id === it.id);
+  if (i >= 0) state.items[i] = it; else state.items.push(it);
+  save(); $('formCard').style.display = 'none'; render();
+};
+$('all').onclick = e => {
+  const ed = e.target.dataset.edit, del = e.target.dataset.del;
+  if (ed) openForm(state.items.find(x => x.id === ed));
+  if (del && confirm('Wirklich löschen?')) { state.items = state.items.filter(x => x.id !== del); save(); render(); }
+};
+$('income').oninput = e => { state.income = +e.target.value || 0; save(); render(); $('income').focus(); };
+
+$('exportBtn').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type:'application/json' }));
+  a.download = 'finanzplaner-backup.json'; a.click();
+};
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = async e => {
+  try {
+    const d = JSON.parse(await e.target.files[0].text());
+    if (!Array.isArray(d.items)) throw 0;
+    state = { items: d.items, income: d.income || 0 }; save(); render();
+  } catch { alert('Die Datei konnte nicht gelesen werden.'); }
+};
+
+render();
+</script>
+</body>
+</html>
